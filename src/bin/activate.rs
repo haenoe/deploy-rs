@@ -44,6 +44,7 @@ enum SubCommand {
     Activate(ActivateOpts),
     Wait(WaitOpts),
     Revoke(RevokeOpts),
+    Diff(DiffOpts),
 }
 
 /// Activate a profile
@@ -110,6 +111,22 @@ struct WaitOpts {
 /// Revoke profile activation
 #[derive(Parser, Debug)]
 struct RevokeOpts {
+    /// The profile path to install into
+    #[arg(long)]
+    profile_path: Option<String>,
+    /// The profile user if explicit profile path is not specified
+    #[arg(long, requires = "profile_name")]
+    profile_user: Option<String>,
+    /// The profile name
+    #[arg(long, requires = "profile_user")]
+    profile_name: Option<String>,
+}
+
+/// Diff a profile
+#[derive(Parser, Debug)]
+struct DiffOpts {
+    /// The closure to activate
+    closure: String,
     /// The profile path to install into
     #[arg(long)]
     profile_path: Option<String>,
@@ -465,6 +482,49 @@ pub async fn activate(
     Ok(())
 }
 
+#[derive(Error, Debug)]
+pub enum DiffError {
+    #[error("Failed to write diff: {0}")]
+    WriteError(#[from] std::fmt::Error),
+}
+
+pub async fn diff(profile_path: String, closure: String) -> Result<(), DiffError> {
+    struct WriteFmt<W: std::io::Write>(W);
+
+    impl<W: std::io::Write> std::fmt::Write for WriteFmt<W> {
+        fn write_str(&mut self, string: &str) -> std::fmt::Result {
+            self.0
+                .write_all(string.as_bytes())
+                .map_err(|_| std::fmt::Error)
+        }
+    }
+
+    let old_generation = Path::new(&profile_path);
+    let new_generation = PathBuf::from(&closure);
+
+    let mut out = WriteFmt(std::io::stdout());
+
+    // Handle to the thread collecting closure size information.
+    let closure_size_handle =
+        dix::spawn_size_diff(old_generation.to_path_buf(), new_generation.clone());
+
+    let wrote =
+        dix::write_paths_diffln(&mut out, old_generation, &new_generation).unwrap_or_default();
+
+    if let Ok(anyhow::Result::Ok((size_old, size_new))) = closure_size_handle.join() {
+        if size_old == size_new {
+            info!("No version or size changes.");
+        } else {
+            if wrote > 0 {
+                println!();
+            }
+            dix::write_size_diffln(&mut out, size_old, size_new)?;
+        }
+    }
+
+    Ok(())
+}
+
 async fn revoke(profile_path: String) -> Result<(), DeactivateError> {
     deactivate(profile_path.as_str()).await?;
     Ok(())
@@ -542,6 +602,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         opts.log_dir.as_deref(),
         &match opts.subcmd {
             SubCommand::Activate(_) => deploy::LoggerType::Activate,
+            SubCommand::Diff(_) => deploy::LoggerType::Activate,
             SubCommand::Wait(_) => deploy::LoggerType::Wait,
             SubCommand::Revoke(_) => deploy::LoggerType::Revoke,
         },
@@ -561,6 +622,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             activate_opts.magic_rollback,
             activate_opts.dry_activate,
             activate_opts.boot,
+        )
+        .await
+        .map_err(|x| Box::new(x) as Box<dyn std::error::Error>),
+
+        SubCommand::Diff(diff_opts) => diff(
+            get_profile_path(
+                diff_opts.profile_path,
+                diff_opts.profile_user,
+                diff_opts.profile_name,
+            )?,
+            diff_opts.closure,
         )
         .await
         .map_err(|x| Box::new(x) as Box<dyn std::error::Error>),

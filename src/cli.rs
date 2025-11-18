@@ -386,7 +386,9 @@ pub enum RunDeployError {
     #[error("Failed to deploy profile to node {0}: {1}")]
     DeployProfile(String, deploy::deploy::DeployProfileError),
     #[error("Failed to build profile on node {0}: {0}")]
-    BuildProfile(String,  deploy::push::PushProfileError),
+    BuildProfile(String, deploy::push::PushProfileError),
+    #[error("Failed to diff profile to node {0}: {0}")]
+    DiffProfile(String, deploy::deploy::DiffProfileError),
     #[error("Failed to push profile to node {0}: {0}")]
     PushProfile(String,  deploy::push::PushProfileError),
     #[error("No profile named `{0}` was found")]
@@ -611,6 +613,52 @@ async fn run_deploy(
     // Rollbacks adhere to the global seeting to auto_rollback and secondary
     // the profile's configuration
     for (_, deploy_data, deploy_defs) in &parts {
+        deploy::deploy::diff_profile(deploy_data, deploy_defs)
+            .await
+            .map_err(|e| RunDeployError::DiffProfile(deploy_data.node_name.to_string(), e))?;
+
+        info!("Are you sure you want to deploy these profiles?");
+        print!("> ");
+
+        stdout()
+            .flush()
+            .map_err(PromptDeploymentError::StdoutFlush)?;
+
+        let mut s = String::new();
+        stdin()
+            .read_line(&mut s)
+            .map_err(PromptDeploymentError::StdinRead)?;
+
+        if !yn::yes(&s) {
+            if yn::is_somewhat_yes(&s) {
+                info!("Sounds like you might want to continue, to be more clear please just say \"yes\". Do you want to deploy these profiles?");
+                print!("> ");
+
+                stdout()
+                    .flush()
+                    .map_err(PromptDeploymentError::StdoutFlush)?;
+
+                let mut s = String::new();
+                stdin()
+                    .read_line(&mut s)
+                    .map_err(PromptDeploymentError::StdinRead)?;
+
+                if !yn::yes(&s) {
+                    std::process::exit(1);
+                    // return Err(PromptDeploymentError::Cancelled);
+                }
+            } else {
+                if !yn::no(&s) {
+                    info!(
+                    "That was unclear, but sounded like a no to me. Please say \"yes\" or \"no\" to be more clear."
+                );
+                }
+
+                std::process::exit(1);
+                // return Err(PromptDeploymentError::Cancelled);
+            }
+        }
+
         if let Err(e) = deploy::deploy::deploy_profile(deploy_data, deploy_defs, dry_activate, boot).await
         {
             error!("{}", e);

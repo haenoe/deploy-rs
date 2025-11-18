@@ -534,6 +534,84 @@ pub async fn deploy_profile(
 }
 
 #[derive(Error, Debug)]
+pub enum DiffProfileError {
+    #[error("Failed to spawn diff command over SSH: {0}")]
+    SSHSpawnDiff(std::io::Error),
+
+    #[error("Error diffing: {0}")]
+    SSHDiff(std::io::Error),
+    #[error("Diffing over SSH resulted in a bad exit code: {0:?}")]
+    SSHDiffExit(Option<i32>),
+
+    #[error("Deployment data invalid: {0}")]
+    InvalidDeployDataDefs(#[from] DeployDataDefsError),
+}
+
+pub(crate) async fn diff_profile(
+    deploy_data: &super::DeployData<'_>,
+    deploy_defs: &super::DeployDefs,
+) -> Result<(), DiffProfileError> {
+    let closure = &deploy_data.profile.profile_settings.path;
+    let profile_info = &deploy_data
+        .get_profile_info()
+        .map_err(DiffProfileError::InvalidDeployDataDefs)?;
+
+    let mut self_diff_command = format!("{}/activate-rs", closure);
+
+    self_diff_command = format!(
+        "{} diff '{}' {}",
+        self_diff_command,
+        closure,
+        match profile_info {
+            ProfileInfo::ProfilePath { profile_path } =>
+                format!("--profile-path '{}'", profile_path),
+            ProfileInfo::ProfileUserAndName {
+                profile_user,
+                profile_name,
+            } => format!(
+                "--profile-user {} --profile-name {}",
+                profile_user, profile_name
+            ),
+        },
+    );
+
+    let hostname = match deploy_data.cmd_overrides.hostname {
+        Some(ref x) => x,
+        None => &deploy_data.node.node_settings.hostname,
+    };
+
+    let ssh_addr = format!("{}@{}", deploy_defs.ssh_user, hostname);
+
+    let mut ssh_diff_command = Command::new("ssh");
+    ssh_diff_command
+        .arg(&ssh_addr)
+        .arg("-tt")
+        .stdin(std::process::Stdio::piped())
+        // Surpress "disconnected from <host>"
+        // TODO: Print when actual error occured!
+        .stderr(std::process::Stdio::null());
+
+    for ssh_opt in &deploy_data.merged_settings.ssh_opts {
+        ssh_diff_command.arg(&ssh_opt);
+    }
+
+    let ssh_diff_child = ssh_diff_command
+        .arg(self_diff_command)
+        .spawn()
+        .map_err(DiffProfileError::SSHSpawnDiff)?;
+
+    let result = ssh_diff_child.wait_with_output().await;
+
+    match result {
+        Err(x) => Err(DiffProfileError::SSHDiff(x)),
+        Ok(ref x) => match x.status.code() {
+            Some(0) => Ok(()),
+            a => Err(DiffProfileError::SSHDiffExit(a)),
+        },
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum RevokeProfileError {
     #[error("Failed to spawn revocation command over SSH: {0}")]
     SSHSpawnRevoke(std::io::Error),
