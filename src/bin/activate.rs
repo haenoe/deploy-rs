@@ -484,43 +484,61 @@ pub async fn activate(
 
 #[derive(Error, Debug)]
 pub enum DiffError {
-    #[error("Failed to write diff: {0}")]
-    WriteError(#[from] std::fmt::Error),
+    #[error("Failed to execute diff program: {0}")]
+    RunDiff(#[from] std::io::Error),
+
+    #[error("Diff program returned nonzero exitcode: {0:?}")]
+    RunDiffExit(Option<i32>),
 }
 
 pub async fn diff(profile_path: String, closure: String) -> Result<(), DiffError> {
-    struct WriteFmt<W: std::io::Write>(W);
+    let diff_status = Command::new(format!("{}/nix-diff", &closure))
+        .arg(&profile_path)
+        .arg(&closure)
+        .arg("--context=1")
+        .status()
+        .await
+        .map_err(DiffError::RunDiff)?;
 
-    impl<W: std::io::Write> std::fmt::Write for WriteFmt<W> {
-        fn write_str(&mut self, string: &str) -> std::fmt::Result {
-            self.0
-                .write_all(string.as_bytes())
-                .map_err(|_| std::fmt::Error)
+    match diff_status.code() {
+        Some(0) => (),
+        a => {
+            return Err(DiffError::RunDiffExit(a));
         }
-    }
+    };
 
-    let old_generation = Path::new(&profile_path);
-    let new_generation = PathBuf::from(&closure);
-
-    let mut out = WriteFmt(std::io::stdout());
-
-    // Handle to the thread collecting closure size information.
-    let closure_size_handle =
-        dix::spawn_size_diff(old_generation.to_path_buf(), new_generation.clone());
-
-    let wrote =
-        dix::write_paths_diffln(&mut out, old_generation, &new_generation).unwrap_or_default();
-
-    if let Ok(anyhow::Result::Ok((size_old, size_new))) = closure_size_handle.join() {
-        if size_old == size_new {
-            info!("No version or size changes.");
-        } else {
-            if wrote > 0 {
-                println!();
-            }
-            dix::write_size_diffln(&mut out, size_old, size_new)?;
-        }
-    }
+    // struct WriteFmt<W: std::io::Write>(W);
+    //
+    // impl<W: std::io::Write> std::fmt::Write for WriteFmt<W> {
+    //     fn write_str(&mut self, string: &str) -> std::fmt::Result {
+    //         self.0
+    //             .write_all(string.as_bytes())
+    //             .map_err(|_| std::fmt::Error)
+    //     }
+    // }
+    //
+    // let old_generation = Path::new(&profile_path);
+    // let new_generation = PathBuf::from(&closure);
+    //
+    // let mut out = WriteFmt(std::io::stdout());
+    //
+    // // Handle to the thread collecting closure size information.
+    // let closure_size_handle =
+    //     dix::spawn_size_diff(old_generation.to_path_buf(), new_generation.clone());
+    //
+    // let wrote =
+    //     dix::write_paths_diffln(&mut out, old_generation, &new_generation).unwrap_or_default();
+    //
+    // if let Ok(anyhow::Result::Ok((size_old, size_new))) = closure_size_handle.join() {
+    //     if size_old == size_new {
+    //         info!("No version or size changes.");
+    //     } else {
+    //         if wrote > 0 {
+    //             println!();
+    //         }
+    //         dix::write_size_diffln(&mut out, size_old, size_new)?;
+    //     }
+    // }
 
     Ok(())
 }

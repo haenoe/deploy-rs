@@ -300,7 +300,7 @@ pub async fn confirm_profile(
         .arg(confirm_command)
         .spawn()
         .map_err(ConfirmProfileError::SSHConfirm)?;
-    
+
     if deploy_data.merged_settings.interactive_sudo.unwrap_or(false) {
         trace!("[confirm] Piping in sudo password");
         handle_sudo_stdin(&mut ssh_confirm_child, deploy_defs)
@@ -311,7 +311,7 @@ pub async fn confirm_profile(
     let ssh_confirm_exit_status = ssh_confirm_child
         .wait()
         .await
-        .map_err(ConfirmProfileError::SSHConfirm)?; 
+        .map_err(ConfirmProfileError::SSHConfirm)?;
 
     match ssh_confirm_exit_status.code() {
         Some(0) => (),
@@ -401,7 +401,11 @@ pub async fn deploy_profile(
     let mut ssh_activate_command = Command::new("ssh");
     ssh_activate_command
         .arg(&ssh_addr)
-        .stdin(std::process::Stdio::piped());
+        .arg("-tt")
+        .stdin(std::process::Stdio::piped())
+        // Surpress "disconnected from <host>"
+        // TODO: Print when actual error occured!
+        .stderr(std::process::Stdio::null());
 
     for ssh_opt in &deploy_data.merged_settings.ssh_opts {
         ssh_activate_command.arg(&ssh_opt);
@@ -467,7 +471,7 @@ pub async fn deploy_profile(
         ssh_wait_command
             .arg(&ssh_addr)
             .stdin(std::process::Stdio::piped());
-        
+
         for ssh_opt in &deploy_data.merged_settings.ssh_opts {
             ssh_wait_command.arg(ssh_opt);
         }

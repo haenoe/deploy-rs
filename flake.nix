@@ -36,7 +36,7 @@
           cargoLock.lockFile = ./Cargo.lock;
 
           meta = {
-            description = "A Simple multi-profile Nix-flake deploy tool"; 
+            description = "A Simple multi-profile Nix-flake deploy tool";
             mainProgram = "deploy";
           };
         };
@@ -69,6 +69,7 @@
                             then
                                 ${customSelf.boot or "echo ${final.writeScript "activate" activate}"}
                             else
+
                                 ${activate}
                             fi
                           '';
@@ -83,6 +84,15 @@
                           '';
                           executable = true;
                           destination = "/activate-rs";
+                        })
+                        (final.writeTextFile {
+                            name = base.name + "-nix-diff";
+                            text = ''
+                            #!${final.runtimeShell}
+                            exec ${final.nix-diff}/bin/nix-diff "$@"
+                          '';
+                          executable = true;
+                          destination = "/nix-diff";
                         })
                       ];
                   };
